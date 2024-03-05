@@ -1,6 +1,7 @@
 package org.mapfish.print;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import ch.qos.logback.classic.LoggerContext;
@@ -42,6 +43,15 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
+import org.verapdf.core.EncryptedPdfException;
+import org.verapdf.core.ModelParsingException;
+import org.verapdf.core.ValidationException;
+import org.verapdf.gf.model.GFModelParser;
+import org.verapdf.pdfa.PDFAValidator;
+import org.verapdf.pdfa.flavours.PDFAFlavour;
+import org.verapdf.pdfa.results.TestAssertion;
+import org.verapdf.pdfa.results.ValidationResult;
+import org.verapdf.pdfa.validation.validators.ValidatorFactory;
 
 /**
  * To run this test make sure that the test GeoServer is running:
@@ -226,14 +236,29 @@ public class ExamplesTest {
   }
 
   @Test
-  public void testPDFA() {
+  public void testPDFA() throws EncryptedPdfException, ModelParsingException, ValidationException {
     final File examplesDir = getFile(ExamplesTest.class, "/examples");
     Map<String, Throwable> errors = new HashMap<>();
-    runExample(new File(examplesDir, "pdf_a_compliant"), errors);
+    runExample(new File(examplesDir, "pdf_a_compliant"), errors, true);
+    LOGGER.warn("Number of errors: {}", errors.size());
     reportErrors(errors, 1);
+    // Validate with VeraPDF
+    try {
+      File file = new File(examplesDir, "pdf_a_compliant/output.pdf");
+      PDFAFlavour flavour = PDFAFlavour.PDFA_1_A;
+      PDFAValidator validator = ValidatorFactory.createValidator(flavour, false);
+
+      LOGGER.warn("Validating file: {}", file.getAbsolutePath());
+      GFModelParser parser = GFModelParser.createModelWithFlavour(file, flavour);
+      ValidationResult result = validator.validate(parser);
+      assertTrue(result.isCompliant());
+    } catch (ValidationException e) {
+      LOGGER.error("Validation failed", e);
+      fail("Validation failed");
+    }
   }
 
-  private int runExample(File example, Map<String, Throwable> errors) {
+  private int runExample(File example, Map<String, Throwable> errors, boolean writeFile) {
     int testsRan = 0;
     try {
       final File configFile = new File(example, CONFIG_FILE);
@@ -241,8 +266,8 @@ public class ExamplesTest {
 
       if (!hasRequestFile(example)) {
         throw new AssertionError(
-            String.format(
-                "Example: '%s' does not have any request data files.", example.getName()));
+          String.format(
+            "Example: '%s' does not have any request data files.", example.getName()));
       }
       for (File requestFile : Objects.requireNonNull(example.listFiles())) {
         if (!requestFile.isFile() || !requestFilter.matcher(requestFile.getName()).matches()) {
@@ -253,9 +278,9 @@ public class ExamplesTest {
             // WARN to be displayed in the Travis logs
             LOGGER.warn("Run example '{}' ({})", example.getName(), requestFile.getName());
             String requestData =
-                new String(
-                    java.nio.file.Files.readAllBytes(requestFile.toPath()),
-                    Constants.DEFAULT_CHARSET);
+              new String(
+                java.nio.file.Files.readAllBytes(requestFile.toPath()),
+                Constants.DEFAULT_CHARSET);
 
             final PJsonObject jsonSpec = MapPrinter.parseSpec(requestData);
 
@@ -263,13 +288,13 @@ public class ExamplesTest {
             String outputFormat = jsonSpec.getInternalObj().getString("outputFormat");
 
             URL url =
-                new URL(
-                    AbstractApiTest.PRINT_SERVER
-                        + "print/"
-                        + example.getName()
-                        + MapPrinterServlet.CREATE_AND_GET_URL
-                        + "."
-                        + outputFormat);
+              new URL(
+                AbstractApiTest.PRINT_SERVER
+                  + "print/"
+                  + example.getName()
+                  + MapPrinterServlet.CREATE_AND_GET_URL
+                  + "."
+                  + outputFormat);
             URLConnection connection = url.openConnection();
             HttpURLConnection http = (HttpURLConnection) connection;
             http.setRequestMethod("POST");
@@ -289,9 +314,9 @@ public class ExamplesTest {
             InputStream inputStr = connection.getInputStream();
             if (responseCode != 200) {
               String encoding =
-                  connection.getContentEncoding() == null
-                      ? "UTF-8"
-                      : connection.getContentEncoding();
+                connection.getContentEncoding() == null
+                  ? "UTF-8"
+                  : connection.getContentEncoding();
               String response = IOUtils.toString(inputStr, encoding);
               Assert.isTrue(false, response);
             }
@@ -314,14 +339,20 @@ public class ExamplesTest {
               File expectedOutput = getExpectedOutput(outputFormat, requestFile, expectedOutputDir);
               if (!expectedOutput.exists()) {
                 errors.put(
-                    example.getName() + " (" + requestFile.getName() + ")",
-                    new Exception("File not found: " + expectedOutput.toString()));
+                  example.getName() + " (" + requestFile.getName() + ")",
+                  new Exception("File not found: " + expectedOutput.toString()));
               }
 
               if (!"bmp".equals(outputFormat)) {
                 // BMP is not supported by ImageIO
                 new ImageSimilarity(expectedOutput).assertSimilarity(image);
               }
+            }
+            if (writeFile) {
+              byte[] buffer = new byte[inputStr.available()];
+              inputStr.read(buffer);
+              File outputFile = new File(example, "output." + outputFormat);
+              java.nio.file.Files.write(outputFile.toPath(), buffer);
             }
           }
         } catch (RuntimeException e) {
@@ -333,6 +364,10 @@ public class ExamplesTest {
     }
 
     return testsRan;
+  }
+
+  private int runExample(File example, Map<String, Throwable> errors) {
+    return this.runExample(example, errors, false);
   }
 
   private File getExpectedOutput(String outputFormat, File requestFile, File expectedOutputDir) {

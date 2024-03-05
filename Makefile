@@ -61,6 +61,11 @@ acceptance-tests-run: .env
 	ci/check-fonts
 	ci/validate-container
 
+
+.PHONY: test-pdfa
+test-pdfa: .env
+	docker-compose exec -T tests gradle :examples:integrationTest --tests '*testPDFA' --info
+
 .PHONY: acceptance-tests-down
 acceptance-tests-down: .env
 	docker-compose down || true
